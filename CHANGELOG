@@ -1,0 +1,6 @@
+INTEL-SA-00075-Discovery-Tool
+INTEL-SA-00075-Unprovisioning-Tool
+====================================
+Release 0.5
+	- Tool not supported on systems with Intel(R) MEI firmware version 6.x
+
