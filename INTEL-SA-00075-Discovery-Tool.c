@@ -124,7 +124,8 @@ static bool mei_init(struct mei *me, const uuid_le *guid,
     }
     if (me->fd == -1) {
         if (!geteuid()) {
-            mei_err(me, "Cannot establish a handle to the Intel(R) MEI driver. Contact OEM\n");
+            mei_err(me, "Cannot establish a handle to the Intel(R) MEI driver. Contact OEM.\n");
+            exit(-1);
         } else {
             mei_err(me, "Please run the tool with root privilege.\n");
             mei_deinit(me);
@@ -490,7 +491,9 @@ typedef struct {
     uint8_t me_hotfix_num;
 } fw_decode;
 
+#define MAX_FW_STRING 20
 void decode_me_fw_information(char *fw_string, fw_decode *FW) {
+    fw_string[MAX_FW_STRING -1] = 0;
     char *num_string = strtok(fw_string, ".");
     if (num_string != NULL) {
         FW->me_major_num = strtoul(num_string, NULL, 0);
@@ -519,7 +522,8 @@ bool discover_vulnerability(sku_decode SKU, fw_decode FW, uint32_t me_build_num)
             return false;
         }
         //Major Version  6 and Minor == 0 
-        if (FW.me_major_num == 6 && FW.me_minor_num == 0) {
+        if (FW.me_major_num == 6 && FW.me_minor_num == 0 
+            && me_build_num >= 3000) {
             return false;
         }
         //Major Version  6 and Minor >= 1  and Build number >= 3000
@@ -545,6 +549,8 @@ bool discover_vulnerability(sku_decode SKU, fw_decode FW, uint32_t me_build_num)
         if (FW.me_major_num >= 12) {
             return false;
         }
+    } else {
+        return false;
     }
     return true;
 }
@@ -629,7 +635,6 @@ int get_provisioning_status(void) {
         }
     }
     failed_check_amt_provision_status: mei_deinit(&acmd.mei_cl);
-    acmd.initialized = false;
     return rval;
 }
 
@@ -669,41 +674,82 @@ static bool mkhi_host_if_init(struct mkhi_host_if *acmd,
     return acmd->initialized;
 }
 
+const uuid_le MEI_MKHI_HIF_FIX = UUID_LE(0x55213584, 0x9a29, 0x4916, 0xba, 0xdf, 0xf, 
+    0xb7, 0xed, 0x68, 0x2a, 0xeb);
+
+static bool mkhi_host_if_fix_init(struct mkhi_host_if *acmd,
+        unsigned long send_timeout, bool verbose) {
+    acmd->send_timeout = (send_timeout) ? send_timeout : 20000;
+    acmd->initialized = mei_init(&acmd->mei_cl, &MEI_MKHI_HIF_FIX, 0, verbose);
+    return acmd->initialized;
+}
+
+static bool enable_fixed_clients_check(void)
+{
+    FILE *fp = fopen("/sys/kernel/debug/mei/allow_fixed_address", "w");
+    if (!fp) {
+        fp  = fopen("/sys/kernel/debug/mei0/allow_fixed_address", "w");
+        if (!fp) {
+            return false;                    
+        }
+    }
+    int ret = (fwrite("Y", sizeof(char), 1, fp) == 1) ? 0 : -1;    
+    fclose(fp);
+    
+    struct mkhi_host_if mkhi_cmd;
+    bool heci_init_call = mkhi_host_if_fix_init(&mkhi_cmd, 5000, false);
+    if (!ret) {
+        if (!heci_init_call) {
+            mei_deinit(&mkhi_cmd.mei_cl);
+            return false;
+        } else {
+            mei_deinit(&mkhi_cmd.mei_cl);
+            return true;
+        }         
+    } else {
+        mei_deinit(&mkhi_cmd.mei_cl);
+        return false;
+    }
+}
+
 int check_if_corporate_sku_by_connection(void) {
     corporate_sku_check = true;
-    struct mkhi_host_if mkhi_cmd;
-    struct amt_host_if amt_cmd;
     int rval = 0;
-
-    if (!mkhi_host_if_init(&mkhi_cmd, 5000, false)) {
-        mei_deinit(&mkhi_cmd.mei_cl);
-        mkhi_cmd.initialized = false;
-        printf("Error: Failed connection to Intel(R) MEI Subsystem. Contact OEM.\n");
-        rval = -1;
-        goto failed_check_if_corporate_sku_by_connection;
-    }
-
-    if (!amt_host_if_init(&amt_cmd, 5000, false)) {
+    //Check AMT connection
+    struct amt_host_if amt_cmd;
+    bool heci_init_call = amt_host_if_init(&amt_cmd, 5000, false);
+    if (!heci_init_call) {
         mei_deinit(&amt_cmd.mei_cl);
-        amt_cmd.initialized = false;
         rval = -2;
-        goto failed_check_if_corporate_sku_by_connection;
     }
-
-    failed_check_if_corporate_sku_by_connection: 
+    //Check HCI connection
+    struct mkhi_host_if mkhi_cmd;
+    heci_init_call = mkhi_host_if_init(&mkhi_cmd, 5000, false);
+    if (rval < 0) {
+        if (!heci_init_call) {
+            mei_deinit(&mkhi_cmd.mei_cl);
+            rval = -1;
+        }        
+    }
+    //Enable fixed client and attempt hci heci connect
+    if (rval == -1) {
+        if (enable_fixed_clients_check()) {
+            rval = -2;
+        } else {
+            printf("Error: Failed connection to Intel(R) MEI Subsystem. Contact OEM.\n");
+        }
+    }
+    //De-Initialize if handles were created
     if (mkhi_cmd.initialized) {
         mei_deinit(&mkhi_cmd.mei_cl);
-        mkhi_cmd.initialized = false;
     }
     if (amt_cmd.initialized) {
         mei_deinit(&amt_cmd.mei_cl);
-        amt_cmd.initialized = false;
     }
     corporate_sku_check = false;
     return rval;
 }
 
-#define MAX_FW_STRING 10
 int parse_code_version_information(uint32_t status, sku_decode *SKU,
         uint32_t *me_build_num, struct amt_code_versions *ver, char *fw_string) {
     int rval = 0;
@@ -804,7 +850,6 @@ int get_provisioning_control_mode(void) {
     }
     failed_get_provisioning_control_mode: 
     mei_deinit(&acmd.mei_cl);
-    acmd.initialized = false;
     return rval;
 }
 
@@ -838,7 +883,7 @@ void print_vulnerability_message(bool provisioned, bool vulnerable) {
 }
 
 void print_tool_banner(void) {
-    printf("\nINTEL-SA-00075-Discovery-Tool -- Release 0.5\n");
+    printf("\nINTEL-SA-00075-Discovery-Tool -- Release 0.8\n");
     printf("Copyright (C) 2003-2012, 2017 Intel Corporation.  All rights reserved\n\n");
 }
 
@@ -857,11 +902,11 @@ int main(int argc, char **argv) {
     }
     bool provisioned = false;
     int ret = check_if_corporate_sku_by_connection();
-    if (ret == -2) {
-        print_vulnerability_message(provisioned, false);
+    if (ret == -1) {
         goto out;
     }
-    if (ret == -1) {
+    if (ret == -2) {
+        print_vulnerability_message(provisioned, false); //false, false
         goto out;
     }
 
@@ -876,6 +921,7 @@ int main(int argc, char **argv) {
 
     sku_decode SKU;
     char fw_string[MAX_FW_STRING];
+    memset(fw_string, 0, MAX_FW_STRING);
     fw_decode FW;
     uint32_t me_build_num;
     ret = parse_code_version_information(status, &SKU, &me_build_num, &ver, fw_string);

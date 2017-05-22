@@ -125,7 +125,8 @@ static bool mei_init(struct mei *me, const uuid_le *guid,
     }
     if (me->fd == -1) {
         if (!geteuid()) {
-            mei_err(me, "Cannot establish a handle to the Intel(R) MEI driver. Contact OEM\n");
+            mei_err(me, "Cannot establish a handle to the Intel(R) MEI driver. Contact OEM.\n");
+            exit(-1);
         } else {
             mei_err(me, "Please run the tool with root privilege.\n");
             mei_deinit(me);
@@ -516,7 +517,7 @@ int un_provision_amt_ccm(void) {
  * INTEL-SA-00075-Unprovisioning-Tool Messages
  *****************************************************************************/
 void print_tool_banner(void) {
-    printf("\nINTEL-SA-00075-Unprovisioning-Tool -- Release 0.5\n");
+    printf("\nINTEL-SA-00075-Unprovisioning-Tool -- Release 0.8\n");
     printf("Copyright (C) 2003-2012, 2017 Intel Corporation.  All rights reserved\n\n");
 }
 
