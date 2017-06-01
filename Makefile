@@ -63,9 +63,6 @@
 #
 #;****************************************************************************;
 
-CC := $(CROSS_COMPILE)gcc
-CFLAGS := -I../../usr/include
-
 PROGS := INTEL-SA-00075-Discovery-Tool INTEL-SA-00075-Unprovisioning-Tool
 
 all: $(PROGS)

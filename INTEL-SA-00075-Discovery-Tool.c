@@ -124,7 +124,9 @@ static bool mei_init(struct mei *me, const uuid_le *guid,
     }
     if (me->fd == -1) {
         if (!geteuid()) {
-            mei_err(me, "Cannot establish a handle to the Intel(R) MEI driver. Contact OEM.\n");
+            mei_err(me, "%s %s\nCannot establish a handle to the Intel(R) MEI driver."
+            " Refer to Tool User Guide for more information.\n", 
+            strerror(errno), dev_path);
             exit(-1);
         } else {
             mei_err(me, "Please run the tool with root privilege.\n");
@@ -540,6 +542,11 @@ bool discover_vulnerability(sku_decode SKU, fw_decode FW, uint32_t me_build_num)
         if (FW.me_major_num == 11 && FW.me_minor_num <= 6
                 && me_build_num >= 3000) {
             return false;
+        }
+        //Major Version 11 and Minor = 7 and Build number: >= 1000 && < 2000  
+        if (FW.me_major_num == 11 && FW.me_minor_num == 7 && 
+            me_build_num >= 1000  && me_build_num < 2000) {
+            return true;
         }
         //Major Version 11 and Minor >= 7 
         if (FW.me_major_num == 11 && FW.me_minor_num >= 7) {

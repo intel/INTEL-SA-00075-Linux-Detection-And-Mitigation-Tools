@@ -125,7 +125,9 @@ static bool mei_init(struct mei *me, const uuid_le *guid,
     }
     if (me->fd == -1) {
         if (!geteuid()) {
-            mei_err(me, "Cannot establish a handle to the Intel(R) MEI driver. Contact OEM.\n");
+            mei_err(me, "%s %s\nCannot establish a handle to the Intel(R) MEI driver."
+                " Refer to Tool User Guide for more information.\n", 
+                strerror(errno), dev_path);
             exit(-1);
         } else {
             mei_err(me, "Please run the tool with root privilege.\n");
