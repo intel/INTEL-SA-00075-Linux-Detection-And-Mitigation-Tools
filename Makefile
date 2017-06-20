@@ -63,10 +63,17 @@
 #
 #;****************************************************************************;
 
-PROGS := INTEL-SA-00075-Discovery-Tool INTEL-SA-00075-Unprovisioning-Tool
 
-all: $(PROGS)
+PROGS = INTEL-SA-00075-Discovery-Tool \
+		INTEL-SA-00075-Unprovisioning-Tool
+
+all:$(PROGS)
 	strip $(PROGS)
 
+INTEL-SA-00075-Discovery-Tool: INTEL-SA-00075-Discovery-Tool.o INTEL-SA-00075.o
+INTEL-SA-00075-Unprovisioning-Tool: INTEL-SA-00075-Unprovisioning-Tool.o INTEL-SA-00075.o
+
 clean:
-	rm -fr $(PROGS)
+	rm -f $(PROGS)
+	rm -f *.o
+

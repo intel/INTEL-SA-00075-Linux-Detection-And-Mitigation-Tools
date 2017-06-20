@@ -63,181 +63,11 @@
  *
  *****************************************************************************/
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <fcntl.h>
-#include <sys/ioctl.h>
-#include <unistd.h>
-#include <errno.h>
-#include <stdint.h>
-#include <stdbool.h>
-#include <bits/wordsize.h>
-#include <linux/mei.h>
-
-/*****************************************************************************
- * Intel(R) MEI
- *****************************************************************************/
-
-#define mei_msg(_me, fmt, ARGS...) do {         \
-	if (_me->verbose)                       \
-		fprintf(stderr, fmt, ##ARGS);	\
-} while (0)
-
-#define mei_err(_me, fmt, ARGS...) do {         \
-	fprintf(stderr, "Error: " fmt, ##ARGS); \
-} while (0)
-
-struct mei {
-    uuid_le guid;
-    bool initialized;
-    bool verbose;
-    unsigned int buf_size;
-    unsigned char prot_ver;
-    int fd;
-};
-
-static void mei_deinit(struct mei *cl) {
-    if (cl->fd != -1)
-        close(cl->fd);
-    cl->fd = -1;
-    cl->buf_size = 0;
-    cl->prot_ver = 0;
-    cl->initialized = false;
-}
-
-#define MAX_DEV_NODE_PATH 12
-char *dev_path;
-bool custom_dev_node = false;
-bool corporate_sku_check = false;
-static bool mei_init(struct mei *me, const uuid_le *guid,
-        unsigned char req_protocol_version, bool verbose) {
-    int result;
-    struct mei_client *cl;
-    struct mei_connect_client_data data;
-
-    me->verbose = verbose;
-    if (custom_dev_node) {
-    	me->fd = open(dev_path, O_RDWR);
-    } else {
-	    me->fd = open("/dev/mei0", O_RDWR);
-    }
-    if (me->fd == -1) {
-        if (!geteuid()) {
-            mei_err(me, "%s %s\nCannot establish a handle to the Intel(R) MEI driver."
-            " Refer to Tool User Guide for more information.\n", 
-            strerror(errno), dev_path);
-            exit(-1);
-        } else {
-            mei_err(me, "Please run the tool with root privilege.\n");
-            mei_deinit(me);
-            exit(-1);
-        }
-        goto err;
-    }
-    memcpy(&me->guid, guid, sizeof(*guid));
-    memset(&data, 0, sizeof(data));
-    me->initialized = true;
-
-    memcpy(&data.in_client_uuid, &me->guid, sizeof(me->guid));
-    result = ioctl(me->fd, IOCTL_MEI_CONNECT_CLIENT, &data);
-    if (result) {
-        if (!corporate_sku_check) {
-            mei_err(me, "IOCTL_MEI_CONNECT_CLIENT receive message. err=%d\n",
-                    result);
-        }
-        goto err;
-    }
-    cl = &data.out_client_properties;
-    mei_msg(me, "max_message_length %d\n", cl->max_msg_length);
-    mei_msg(me, "protocol_version %d\n", cl->protocol_version);
-
-    if ((req_protocol_version > 0)
-            && (cl->protocol_version != req_protocol_version)) {
-        mei_err(me, "Intel(R) MEI protocol version not supported\n");
-        goto err;
-    }
-
-    me->buf_size = cl->max_msg_length;
-    me->prot_ver = cl->protocol_version;
-
-    return true;
-    err: mei_deinit(me);
-    return false;
-}
-
-static ssize_t mei_recv_msg(struct mei *me, unsigned char *buffer, ssize_t len,
-        unsigned long timeout) {
-    ssize_t rc;
-
-    mei_msg(me, "call read length = %zd\n", len);
-
-    rc = read(me->fd, buffer, len);
-    if (rc < 0) {
-        mei_err(me, "read failed with status %zd %s\n", rc, strerror(errno));
-        mei_deinit(me);
-    } else {
-        mei_msg(me, "read succeeded with result %zd\n", rc);
-    }
-    return rc;
-}
-
-static ssize_t mei_send_msg(struct mei *me, const unsigned char *buffer,
-        ssize_t len, unsigned long timeout) {
-    struct timeval tv;
-    ssize_t written;
-    ssize_t rc;
-    fd_set set;
-
-    tv.tv_sec = timeout / 1000;
-    tv.tv_usec = (timeout % 1000) * 1000000;
-
-    mei_msg(me, "call write length = %zd\n", len);
-
-    written = write(me->fd, buffer, len);
-    if (written < 0) {
-        rc = -errno;
-        mei_err(me, "write failed with status %zd %s\n", written,
-                strerror(errno));
-        goto out;
-    }
-
-    FD_ZERO(&set);
-    FD_SET(me->fd, &set);
-    rc = select(me->fd + 1, &set, NULL, NULL, &tv);
-    if (rc > 0 && FD_ISSET(me->fd, &set)) {
-        mei_msg(me, "write success\n");
-    } else if (rc == 0) {
-        mei_err(me, "write failed on timeout with status\n");
-        goto out;
-    } else { /* rc < 0 */
-        mei_err(me, "write failed on select with status %zd\n", rc);
-        goto out;
-    }
-
-    rc = written;
-    out: if (rc < 0)
-        mei_deinit(me);
-
-    return rc;
-}
+#include "INTEL-SA-00075.h"
 
 /***************************************************************************
  * Intel(R) AMT
  ***************************************************************************/
-
-#define AMT_MAJOR_VERSION 1
-#define AMT_MINOR_VERSION 1
-
-#define AMT_STATUS_SUCCESS                0x0
-#define AMT_STATUS_INTERNAL_ERROR         0x1
-#define AMT_STATUS_NOT_READY              0x2
-#define AMT_STATUS_INVALID_AMT_MODE       0x3
-#define AMT_STATUS_INVALID_MESSAGE_LENGTH 0x4
-
-#define AMT_STATUS_HOST_IF_EMPTY_RESPONSE  0x4000
-#define AMT_STATUS_SDK_RESOURCES      0x1004
-
 #define AMT_BIOS_VERSION_LEN   65
 #define AMT_VERSIONS_NUMBER    50
 #define AMT_UNICODE_STRING_LEN 20
@@ -263,10 +93,6 @@ struct amt_code_versions {
     struct amt_version_type versions[AMT_VERSIONS_NUMBER];
 }__attribute__((packed));
 
-/***************************************************************************
- * Intel(R) AMT -  Host Interface
- ***************************************************************************/
-
 struct amt_host_if_msg_header {
     struct amt_version version;
     uint16_t _reserved;
@@ -280,33 +106,18 @@ struct amt_host_if_resp_header {
     unsigned char data[0];
 }__attribute__((packed));
 
-const uuid_le MEI_IAMTHIF = UUID_LE(0x12f80028, 0xb4b7, 0x4b2d, 0xac, 0xa8,
-        0x46, 0xe0, 0xff, 0x65, 0x81, 0x4c);
-
 #define AMT_HOST_IF_CODE_VERSIONS_REQUEST  0x0400001A
 #define AMT_HOST_IF_CODE_VERSIONS_RESPONSE 0x0480001A
 
-const struct amt_host_if_msg_header CODE_VERSION_REQ = { .version = {
-AMT_MAJOR_VERSION, AMT_MINOR_VERSION }, ._reserved = 0, .command =
-AMT_HOST_IF_CODE_VERSIONS_REQUEST, .length = 0 };
-
-struct amt_host_if {
-    struct mei mei_cl;
-    unsigned long send_timeout;
-    bool initialized;
+const struct amt_host_if_msg_header CODE_VERSION_REQ = { 
+    .version = {
+        AMT_MAJOR_VERSION,
+        AMT_MINOR_VERSION 
+    }, 
+    ._reserved = 0, 
+    .command = AMT_HOST_IF_CODE_VERSIONS_REQUEST, 
+    .length = 0 
 };
-
-static bool amt_host_if_init(struct amt_host_if *acmd,
-        unsigned long send_timeout, bool verbose) {
-    acmd->send_timeout = (send_timeout) ? send_timeout : 20000;
-    acmd->initialized = mei_init(&acmd->mei_cl, &MEI_IAMTHIF, 0, verbose);
-    return acmd->initialized;
-}
-
-static void amt_host_if_deinit(struct amt_host_if *acmd) {
-    mei_deinit(&acmd->mei_cl);
-    acmd->initialized = false;
-}
 
 static uint32_t amt_verify_code_versions(
         const struct amt_host_if_resp_header *resp) {
@@ -363,7 +174,7 @@ static uint32_t amt_verify_response_header(uint32_t command,
     return AMT_STATUS_SUCCESS;
 }
 
-static uint32_t amt_host_if_call(struct amt_host_if *acmd,
+static uint32_t amt_host_if_call(struct heci_host_if *acmd,
         const unsigned char *command, ssize_t command_sz, uint8_t **read_buf,
         uint32_t rcmd, unsigned int expected_sz) {
     uint32_t in_buf_sz;
@@ -379,12 +190,11 @@ static uint32_t amt_host_if_call(struct amt_host_if *acmd,
     memset(*read_buf, 0, in_buf_sz);
     msg_hdr = (struct amt_host_if_resp_header *) *read_buf;
 
-    written = mei_send_msg(&acmd->mei_cl, command, command_sz,
-            acmd->send_timeout);
+    written = mei_send_msg(&acmd->mei_cl, command, command_sz);
     if (written != command_sz)
         return AMT_STATUS_INTERNAL_ERROR;
 
-    out_buf_sz = mei_recv_msg(&acmd->mei_cl, *read_buf, in_buf_sz, 2000);
+    out_buf_sz = mei_recv_msg(&acmd->mei_cl, *read_buf, in_buf_sz);
     if (out_buf_sz <= 0)
         return AMT_STATUS_HOST_IF_EMPTY_RESPONSE;
 
@@ -402,7 +212,7 @@ static uint32_t amt_host_if_call(struct amt_host_if *acmd,
     return AMT_STATUS_SUCCESS;
 }
 
-static uint32_t amt_get_code_versions(struct amt_host_if *cmd,
+static uint32_t amt_get_code_versions(struct heci_host_if *cmd,
         struct amt_code_versions *versions) {
     struct amt_host_if_resp_header *response = NULL;
     uint32_t status;
@@ -419,8 +229,7 @@ static uint32_t amt_get_code_versions(struct amt_host_if *cmd,
         goto out;
 
     memcpy(versions, response->data, sizeof(struct amt_code_versions));
-    out: 
-    if (response != NULL)
+    out: if (response != NULL)
         free(response);
 
     return status;
@@ -429,7 +238,10 @@ static uint32_t amt_get_code_versions(struct amt_host_if *cmd,
 /*****************************************************************************
  * SKU Decode Context
  *****************************************************************************/
-
+/* 
+ * Since the code is expected to be run exclusively on Intel Silicon,
+ * only little endian implementation of the bitfield is done.
+ */
 typedef union {
     struct {
         unsigned reserved :1;
@@ -445,12 +257,17 @@ typedef union {
         unsigned intel_anti_theft_technology :1;
         unsigned corporate_sku :1;
         unsigned level_3_manageability_upgrade :1;
-        unsigned intel_small_business_technology :1; 
+        unsigned intel_small_business_technology :1;
         unsigned reserved_5 :15;
     };
     uint32_t full_sku_value;
 } sku_decode;
 
+/*
+ * SKU information is parsed per the bitfield definition in sku_decode
+ * This information is used to print SKU features and also used in determining
+ * Vulnerable skus per Intel-SA-00075
+ */
 void decode_amt_sku_information(sku_decode SKU) {
     printf("\n-----------------SKU Information-----------------\n");
     if (SKU.intel_small_business_technology) {
@@ -466,7 +283,7 @@ void decode_amt_sku_information(sku_decode SKU) {
         printf("\t\t Intel(R) Anti-Theft Technology (Intel(R) AT)\n");
     }
     if (SKU.intel_remote_pc_assist) {
-        printf("\t\t Intel(R) Remote PC Assist\n");
+        printf("\t\t Intel(R) Remote PC Assist Technology (Intel(R) RPAT)\n");
     }
     if (SKU.intel_standard_manageability) {
         printf("\t\t Intel(R) Standard Manageability\n");
@@ -493,27 +310,38 @@ typedef struct {
     uint8_t me_hotfix_num;
 } fw_decode;
 
+/*
+ * Parses firmware version string sent by the Intel(R) MEI AMT client
+ */
 #define MAX_FW_STRING 20
 void decode_me_fw_information(char *fw_string, fw_decode *FW) {
-    fw_string[MAX_FW_STRING -1] = 0;
-    char *num_string = strtok(fw_string, ".");
-    if (num_string != NULL) {
-        FW->me_major_num = strtoul(num_string, NULL, 0);
+    if (fw_string != NULL) fw_string[MAX_FW_STRING - 1] = 0;
+    char *token_start = fw_string;
+    char *token_end = fw_string;
+    if (token_start != NULL) {
+        strsep(&token_end, ".");
+        FW->me_major_num = strtoul(token_start, NULL, 0);
+        token_start = token_end;
     }
-    num_string = strtok(NULL, ".");
-    if (num_string != NULL) {
-        FW->me_minor_num = strtoul(num_string, NULL, 0);
+    if (token_start != NULL) {
+        strsep(&token_end, ".");
+        FW->me_minor_num = strtoul(token_start, NULL, 0);
+        token_start = token_end;
     }
-    num_string = strtok(NULL, ".");
-    if (num_string != NULL) {
-        FW->me_hotfix_num = strtoul(num_string, NULL, 0);
+    if (token_start != NULL) {
+        strsep(&token_end, ".");
+        FW->me_hotfix_num = strtoul(token_start, NULL, 0);
+        token_start = token_end;
     }
 }
 
 /*****************************************************************************
  * Discover Vulnerability
  *****************************************************************************/
-
+/*
+ * Function to determine vulnerable sku ranges based on 
+ * FW Version: Major#.Minor#.Hotfix# and Build#
+ */
 bool discover_vulnerability(sku_decode SKU, fw_decode FW, uint32_t me_build_num) {
     //sku
     if (SKU.corporate_sku || SKU.intel_small_business_technology
@@ -524,8 +352,8 @@ bool discover_vulnerability(sku_decode SKU, fw_decode FW, uint32_t me_build_num)
             return false;
         }
         //Major Version  6 and Minor == 0 
-        if (FW.me_major_num == 6 && FW.me_minor_num == 0 
-            && me_build_num >= 3000) {
+        if (FW.me_major_num == 6 && FW.me_minor_num == 0
+                && me_build_num >= 3000) {
             return false;
         }
         //Major Version  6 and Minor >= 1  and Build number >= 3000
@@ -544,8 +372,8 @@ bool discover_vulnerability(sku_decode SKU, fw_decode FW, uint32_t me_build_num)
             return false;
         }
         //Major Version 11 and Minor = 7 and Build number: >= 1000 && < 2000  
-        if (FW.me_major_num == 11 && FW.me_minor_num == 7 && 
-            me_build_num >= 1000  && me_build_num < 2000) {
+        if (FW.me_major_num == 11 && FW.me_minor_num == 7
+                && me_build_num >= 1000 && me_build_num < 2000) {
             return true;
         }
         //Major Version 11 and Minor >= 7 
@@ -563,148 +391,27 @@ bool discover_vulnerability(sku_decode SKU, fw_decode FW, uint32_t me_build_num)
 }
 
 /*****************************************************************************
- * Check Provisioned State
- *****************************************************************************/
-#define PROVISIONING_STATE_PRE 0
-#define PROVISIONING_STATE_IN 1
-#define PROVISIONING_STATE_POST 2
-
-typedef struct {
-    uint32_t Operation :23;
-    uint32_t IsResponse :1;
-    uint32_t Class :8;
-} COMMAND_FMT;
-
-typedef struct {
-    uint8_t MajorNumber;
-    uint8_t MinorNumber;
-} PTHI_VERSION;
-
-typedef struct {
-    PTHI_VERSION Version;
-    uint16_t Reserved;
-    COMMAND_FMT Command;
-    uint32_t Length;
-} PTHI_MESSAGE_HEADER;
-
-typedef struct {
-    PTHI_MESSAGE_HEADER Header;
-} CFG_GetProvisioningState_Request;
-
-typedef struct {
-    PTHI_MESSAGE_HEADER Header;
-    uint32_t Status;
-    uint32_t ProvisioningState;
-} CFG_GetProvisioningState_Response;
-
-int get_provisioning_status(void) {
-    struct amt_host_if acmd;
-    int rval = 0;
-
-    if (!amt_host_if_init(&acmd, 5000, false)) {
-        rval = -1;
-        goto failed_check_amt_provision_status;
-    }
-
-    CFG_GetProvisioningState_Request request = {
-            .Header.Version.MajorNumber = 1, .Header.Version.MinorNumber = 1,
-            .Header.Command.Class = 4, .Header.Command.Operation = 0x11,
-            .Header.Length = sizeof(request.Header) };
-
-    uint32_t written = mei_send_msg(&acmd.mei_cl,
-            (const unsigned char *) &request, sizeof(request),
-            acmd.send_timeout);
-    if (written != sizeof(request)) {
-        rval = -1;
-        goto failed_check_amt_provision_status;
-    }
-
-    CFG_GetProvisioningState_Response response;
-    uint32_t out_buf_sz = mei_recv_msg(&acmd.mei_cl,
-            (unsigned char *) &response, sizeof(response), 2000);
-    if (out_buf_sz <= 0 || response.Status != AMT_STATUS_SUCCESS) {
-        printf("Error: Failed to retrieve response for provisioning status: %08X\n",
-                response.Status);
-        rval = -1;
-        goto failed_check_amt_provision_status;
-    } else {
-        if (response.ProvisioningState == PROVISIONING_STATE_PRE) {
-            printf("PROVISIONING_STATE = PRE\n"); //Not Provisioned
-            rval = 0;
-        }
-        if (response.ProvisioningState == PROVISIONING_STATE_IN) {
-            printf("PROVISIONING_STATE = IN\n");
-            rval = 1;
-        }
-        if (response.ProvisioningState == PROVISIONING_STATE_POST) {
-            printf("PROVISIONING_STATE = POST\n"); //Provisioned
-            rval = 2;
-        }
-    }
-    failed_check_amt_provision_status: mei_deinit(&acmd.mei_cl);
-    return rval;
-}
-
-/*****************************************************************************
  * Check Corporate Sku with MKHI HECI connection
  *****************************************************************************/
-typedef struct {
-    uint32_t GroupId :8;
-    uint32_t Command :7;
-    uint32_t IsResponse :1;
-    uint32_t Reserved :8;
-    uint32_t Result :8;
-} MKHI_MESSAGE_HEADER;
-
-typedef struct {
-    MKHI_MESSAGE_HEADER Header;
-} GEN_GET_VPRO_ALLOWED_Request;
-
-typedef struct {
-    MKHI_MESSAGE_HEADER Header;
-    uint8_t VproAllowed;
-} GEN_GET_VPRO_ALLOWED_Response;
-
-struct mkhi_host_if {
-    struct mei mei_cl;
-    unsigned long send_timeout;
-    bool initialized;
-};
-
-const uuid_le MEI_MKHI_HIF = UUID_LE(0x8e6a6715, 0x9abc, 0x4043, 0x88, 0xef,
-        0x9e, 0x39, 0xc6, 0xf6, 0x3e, 0x0f);
-
-static bool mkhi_host_if_init(struct mkhi_host_if *acmd,
-        unsigned long send_timeout, bool verbose) {
-    acmd->send_timeout = (send_timeout) ? send_timeout : 20000;
-    acmd->initialized = mei_init(&acmd->mei_cl, &MEI_MKHI_HIF, 0, verbose);
-    return acmd->initialized;
-}
-
-const uuid_le MEI_MKHI_HIF_FIX = UUID_LE(0x55213584, 0x9a29, 0x4916, 0xba, 0xdf, 0xf, 
-    0xb7, 0xed, 0x68, 0x2a, 0xeb);
-
-static bool mkhi_host_if_fix_init(struct mkhi_host_if *acmd,
-        unsigned long send_timeout, bool verbose) {
-    acmd->send_timeout = (send_timeout) ? send_timeout : 20000;
-    acmd->initialized = mei_init(&acmd->mei_cl, &MEI_MKHI_HIF_FIX, 0, verbose);
-    return acmd->initialized;
-}
-
-static bool enable_fixed_clients_check(void)
-{
+/*
+ * Enables alternative MKHI/ HCI client connection within Intel(R) ME FW
+ * Required to determine Intel(R) MEI firmware readiness.
+ */
+static bool enable_fixed_clients_check(const char *device_path) {
     FILE *fp = fopen("/sys/kernel/debug/mei/allow_fixed_address", "w");
     if (!fp) {
-        fp  = fopen("/sys/kernel/debug/mei0/allow_fixed_address", "w");
+        fp = fopen("/sys/kernel/debug/mei0/allow_fixed_address", "w");
         if (!fp) {
-            return false;                    
+            return false;
         }
     }
-    int ret = (fwrite("Y", sizeof(char), 1, fp) == 1) ? 0 : -1;    
+    int ret = (fwrite("Y", sizeof(char), 1, fp) == 1) ? 0 : -1;
     fclose(fp);
-    
-    struct mkhi_host_if mkhi_cmd;
-    bool heci_init_call = mkhi_host_if_fix_init(&mkhi_cmd, 5000, false);
+
+    struct heci_host_if mkhi_cmd;
+    CLIENT_TYPE client_type = MKHI_FIX_CLIENT_TYPE;
+    bool heci_init_call = heci_host_if_init(&mkhi_cmd, 5000, device_path,
+            client_type);
     if (!ret) {
         if (!heci_init_call) {
             mei_deinit(&mkhi_cmd.mei_cl);
@@ -712,51 +419,105 @@ static bool enable_fixed_clients_check(void)
         } else {
             mei_deinit(&mkhi_cmd.mei_cl);
             return true;
-        }         
+        }
     } else {
         mei_deinit(&mkhi_cmd.mei_cl);
         return false;
     }
 }
 
-int check_if_corporate_sku_by_connection(void) {
-    corporate_sku_check = true;
-    int rval = 0;
-    //Check AMT connection
-    struct amt_host_if amt_cmd;
-    bool heci_init_call = amt_host_if_init(&amt_cmd, 5000, false);
-    if (!heci_init_call) {
-        mei_deinit(&amt_cmd.mei_cl);
-        rval = -2;
+/*
+ * Function:     Checks if Intel(R) ME FW has an HCI/ MKHI client in the FW SKU.
+ * Returns :     True --> Connection with the client was successful.
+ *               False--> Connection with the client failed. 
+ * Arguments:    # Intel(R) MEI kernel device node path
+ * Dependencies: None.
+ * Description:  None
+ * Notes:       On Intel(R) ME FW version 6.0 connection of MKHI may fail and can 
+ *              be achieved by enabling a allow_fixed address flag and an alternative UUID.
+ */
+static bool check_mei_init(struct mei *me, const uuid_le *guid,
+        const char *device_path) {
+    int result;
+    bool rval = false;
+    struct mei_connect_client_data data = { 0 };
+
+    me->fd = open(device_path, O_RDWR);
+    if (me->fd == -1) {
+        mei_err(me, "%s %s\nCannot establish a handle to the Intel(R) MEI driver."
+         " Refer to Tool User Guide for more information.\n",strerror(errno), 
+         device_path);
+        exit(-1);
     }
-    //Check HCI connection
-    struct mkhi_host_if mkhi_cmd;
-    heci_init_call = mkhi_host_if_init(&mkhi_cmd, 5000, false);
-    if (rval < 0) {
-        if (!heci_init_call) {
-            mei_deinit(&mkhi_cmd.mei_cl);
-            rval = -1;
-        }        
+    memcpy(&me->guid, guid, sizeof(*guid));
+    me->initialized = true;
+
+    memcpy(&data.in_client_uuid, &me->guid, sizeof(me->guid));
+    result = ioctl(me->fd, IOCTL_MEI_CONNECT_CLIENT, &data);
+    if (result) {
+        rval = false;
+        goto err;
     }
-    //Enable fixed client and attempt hci heci connect
-    if (rval == -1) {
-        if (enable_fixed_clients_check()) {
-            rval = -2;
-        } else {
-            printf("Error: Failed connection to Intel(R) MEI Subsystem. Contact OEM.\n");
-        }
-    }
-    //De-Initialize if handles were created
-    if (mkhi_cmd.initialized) {
-        mei_deinit(&mkhi_cmd.mei_cl);
-    }
-    if (amt_cmd.initialized) {
-        mei_deinit(&amt_cmd.mei_cl);
-    }
-    corporate_sku_check = false;
+
+    rval = true;
+err: 
+    mei_deinit(me);
     return rval;
 }
 
+/*
+ * Function:     Checks if Intel(R) ME FW has an Intel(R) AMT client in the FW SKU.
+ * Returns :     0--> Connection with Intel(R) AMT client was successful.
+ *              -1--> Neither Intel(R) AMT nor MKHI clients were responsive. 
+ *              -2--> Intel(R) AMT client was not responsive.
+ * Arguments:    # Intel(R) MEI kernel device node path
+ * Dependencies: None
+ * Description:  If connection fails, then it tries to make connection with HCI/ MKHI 
+ *               client to ensure Intel(R) MEI is responsive to avoid falsely 
+ *               reporting absence of Intel(R) AMT client.
+ * Notes:        On Intel(R) ME FW version 6.0 connection of MKHI may fail and can 
+ *               be achieved by enabling a allow_fixed address flag and an alternative UUID.
+ */
+int check_if_corporate_sku_by_connection(const char *device_path) {
+    int rval = 0;
+    //Check AMT connection
+    struct mei amt_mei_check;
+
+    bool heci_init_call = check_mei_init(&amt_mei_check, &MEI_IAMTHIF,
+            device_path);
+    if (!heci_init_call) {
+        rval = -2;
+    } else {
+        return rval;
+    }
+    //Check HCI connection
+    CLIENT_TYPE client_type = MKHI_CLIENT_TYPE;
+    struct heci_host_if mkhi_cmd;
+    heci_init_call = heci_host_if_init(&mkhi_cmd, 5000, device_path,
+            client_type);
+    if (mkhi_cmd.initialized) {
+        mei_deinit(&mkhi_cmd.mei_cl);
+    }
+    if (!heci_init_call) {
+        rval = -1;
+    } else {
+        return rval;
+    }
+
+    if (enable_fixed_clients_check(device_path)) {
+        //Unable to connect with Intel(R) MEI AMT client on MEI v6.0
+        rval = -2;
+    } else {
+        printf("Error: Failed connection to Intel(R) MEI Subsystem."
+            " Contact OEM.\n");
+    }
+    return rval;
+}
+
+/*
+ * Parse, print and extract firmware information from the sku information retrieved
+ * using the GetCodeVersion command going to the Intel(R) AMT client.
+ */
 int parse_code_version_information(uint32_t status, sku_decode *SKU,
         uint32_t *me_build_num, struct amt_code_versions *ver, char *fw_string) {
     int rval = 0;
@@ -767,7 +528,8 @@ int parse_code_version_information(uint32_t status, sku_decode *SKU,
         goto failed_parse_code_version_information;
         break;
     case AMT_STATUS_SUCCESS:
-        printf("\n------------------Firmware Information--------------------\n");
+        printf(
+                "\n------------------Firmware Information--------------------\n");
         printf("\nIntel(R) AMT: ENABLED\n");
         uint32_t i;
         for (i = 0; i < ver->count; i++) {
@@ -777,20 +539,23 @@ int parse_code_version_information(uint32_t status, sku_decode *SKU,
                 SKU->full_sku_value = strtoul(ver->versions[i].version.string,
                         NULL, 0);
                 if (!SKU->full_sku_value) {
-                    printf("Error: Unable to determine system state, contact OEM\n");
+                    printf("Error: Unable to determine system state,"
+                        " contact OEM\n");
                     rval = -1;
-                    goto failed_parse_code_version_information; //should be fatal
+                    goto failed_parse_code_version_information;
+                    //should be fatal
                 }
             }
             if (!strncmp(ver->versions[i].description.string, "AMT", 3)) {
-                if( strlen(ver->versions[i].version.string) < MAX_FW_STRING) {
+                if (strlen(ver->versions[i].version.string) < MAX_FW_STRING) {
                     strncpy(fw_string, ver->versions[i].version.string,
-                        sizeof(strlen(ver->versions[i].version.string)));
+                            sizeof(strlen(ver->versions[i].version.string)));
                 } else {
-                    printf("Error: Unable to determine system state, contact OEM\n");
+                    printf("Error: Unable to determine system state,"
+                        " contact OEM\n");
                     rval = -1;
                     goto failed_parse_code_version_information;
-                }                 
+                }
             }
             if (!strncmp(ver->versions[i].description.string, "Build Number", 12)) {
                 *me_build_num = strtoul(ver->versions[i].version.string, NULL, 0);
@@ -802,64 +567,9 @@ int parse_code_version_information(uint32_t status, sku_decode *SKU,
         rval = -1;
         break;
     }
-    failed_parse_code_version_information: 
+failed_parse_code_version_information: 
     return rval;
 }
-
-
-/*****************************************************************************
- * Check Provisioning Control Mode
- *****************************************************************************/
-typedef struct
-{
-    PTHI_MESSAGE_HEADER Header;
-}  CFG_GetControlMode_Request;
-
-typedef struct
-{
-    PTHI_MESSAGE_HEADER Header;
-    uint32_t Status;
-    uint32_t ControlMode;  // returned upon success only
-}  CFG_GetControlMode_Response;
-
-int get_provisioning_control_mode(void) {
-    struct amt_host_if acmd;
-    int rval = 0;
-    if (!amt_host_if_init(&acmd, 5000, false)) {
-        rval = -1;
-        goto failed_get_provisioning_control_mode;
-    }
-
-    CFG_GetControlMode_Request request = {
-        .Header.Version.MajorNumber = 1, 
-        .Header.Version.MinorNumber = 1,
-        .Header.Command.Class = 0x4, 
-        .Header.Command.Operation = 0x6B,
-        .Header.Length = sizeof(request.Header) 
-    };
-
-    uint32_t written = mei_send_msg(&acmd.mei_cl,
-            (const unsigned char *) &request, sizeof(request),
-            acmd.send_timeout);
-    if (written != sizeof(request)) {
-        rval = -1;
-        goto failed_get_provisioning_control_mode;
-    }
-
-    CFG_GetControlMode_Response response;
-    uint32_t out_buf_sz = mei_recv_msg(&acmd.mei_cl,
-            (unsigned char *) &response, sizeof(response), 2000);
-    if (out_buf_sz <= 0 || response.Status != AMT_STATUS_SUCCESS) {
-        rval = -1;
-        goto failed_get_provisioning_control_mode;
-    } else {
-        rval = response.ControlMode;
-    }
-    failed_get_provisioning_control_mode: 
-    mei_deinit(&acmd.mei_cl);
-    return rval;
-}
-
 
 /*****************************************************************************
  * INTEL-SA-00075-Discovery-Tool Messages
@@ -867,22 +577,22 @@ int get_provisioning_control_mode(void) {
 void print_vulnerability_message(bool provisioned, bool vulnerable) {
     printf("\n------------------Vulnerability Status--------------------\n");
     if (vulnerable) {
-    if (provisioned) {
-        printf( "Based on the version of the Intel(R) MEI, the System is Vulnerable.\n"
-            "Run the unprovision tool to reset AMT to factory settings.\n"
-            "If Vulnerable, contact your OEM for support and remediation of this system.\n"
-            "For more information, refer to CVE-2017-5689 at:\n"
-            "https://nvd.nist.gov/vuln/detail/CVE-2017-5689 or the Intel security advisory\n"
-            "Intel-SA-00075 at:\n"
-            "https://security-center.intel.com/advisory.aspx?intelid=INTEL-SA-00075&languageid=en-fr");
-    } else {
-        printf( "Based on the version of the Intel(R) MEI, the System is Vulnerable.\n"
-            "If Vulnerable, contact your OEM for support and remediation of this system.\n"
-            "For more information, refer to CVE-2017-5689 at:\n"
-            "https://nvd.nist.gov/vuln/detail/CVE-2017-5689 or the Intel security advisory\n"
-            "Intel-SA-00075 at:\n"
-            "https://security-center.intel.com/advisory.aspx?intelid=INTEL-SA-00075&languageid=en-fr");
-    }
+        if (provisioned) {
+            printf("Based on the version of the Intel(R) MEI, the System is Vulnerable.\n"
+                   "Run the unprovision tool to reset AMT to factory settings.\n"
+                   "If Vulnerable, contact your OEM for support and remediation of this system.\n"
+                   "For more information, refer to CVE-2017-5689 at:\n"
+                   "https://nvd.nist.gov/vuln/detail/CVE-2017-5689 or the Intel security advisory\n"
+                   "Intel-SA-00075 at:\n"
+                   "https://security-center.intel.com/advisory.aspx?intelid=INTEL-SA-00075&languageid=en-fr");
+        } else {
+            printf("Based on the version of the Intel(R) MEI, the System is Vulnerable.\n"
+                   "If Vulnerable, contact your OEM for support and remediation of this system.\n"
+                   "For more information, refer to CVE-2017-5689 at:\n"
+                   "https://nvd.nist.gov/vuln/detail/CVE-2017-5689 or the Intel security advisory\n"
+                   "Intel-SA-00075 at:\n"
+                   "https://security-center.intel.com/advisory.aspx?intelid=INTEL-SA-00075&languageid=en-fr");
+        }
     } else {
         printf("System is not Vulnerable, no further action needed.\n");
     }
@@ -890,48 +600,103 @@ void print_vulnerability_message(bool provisioned, bool vulnerable) {
 }
 
 void print_tool_banner(void) {
-    printf("\nINTEL-SA-00075-Discovery-Tool -- Release 0.8\n");
-    printf("Copyright (C) 2003-2012, 2017 Intel Corporation.  All rights reserved\n\n");
+    printf("\nINTEL-SA-00075-Discovery-Tool -- Release 1.0\n");
+    printf("Copyright (C) 2003-2012, 2017 Intel Corporation. All rights reserved\n\n");
 }
-
 
 /*****************************************************************************
  * INTEL-SA-00075-Discovery-Tool 
  *****************************************************************************/
+/*
+ * Function:     Determine whether the Intel(R) MEI firmware version currently on
+ *               the platform is vulnerable as per INTEL-SA-00075 advisory.
+ * Dependencies: Root privilege/ permissions.
+ * Arguments:    [INPUT] -d is the only expected command line option for 
+ *               user defined /dev/mei# node
+ * Description:  (1) Displays the tool version and copyright info
+ *               (2) Ensures the tool was run with root permissions
+ *               (3) Defaults to open /dev/mei0 node unless specified by user option
+ *               (4) Checks the Intel (R) MEI fw sku to determine if it is a consumer
+ *                   or a corporate sku by trying to connect to the Intel(R) AMT 
+ *                   client in the Intel(R) ME fw and parsing GetCodeVersion output.
+ *                   If it is determined to be a consumer sku it 
+ *                   calls function to print system not vulnerable message and exits.
+ *                   Another possibility is that application was not able to make 
+ *                   any connection with the Intel(R) ME fw at all, in which case
+ *                   it also exits after printing this failure instead to the screen.
+ *               (5) If an Intel(R) AMT connection was successful, it then retrieves 
+ *                   the firmware sku information by issuing the GetCodeVersion
+ *                   command.
+ *               (6) It then closes/ deinitializes the Intel(R) AMT connection
+ *                   with the Intel(R) ME fw.
+ *               (7) Information retrieved from Intel(R) AMT client in step 5 is 
+ *                   parsed to record "firmware-version" (in a string fw_string), 
+ *                   "SKU value" and build_number required in decision making of 
+ *                   vulnerable skus.
+ *                   Any failures reflected in return value of this function causes
+ *                   the program to exit at this point.
+ *               (8) The SKU value is parsed to record and print the SKU type.
+ *               (9) The firmware string is parsed to record firmware: Major#, Minor#
+ *                   and Hotfix# which is used in determining the vulnerable skus.
+ *              (10) The system is checked to see if it is in a provisioned state
+ *                   by calling a function that returns a positive value if provisioned.
+ *                   If get_provisioning_status fails, it still continues to see if
+ *                   sku is infact vulnerable.
+ *              (11) If provisioned a function is called to determine provisioning mode.
+ *              (12) At this point we have all the information to determine if the 
+ *                   system is vulnerable along with its provisioning state and mode
+ *                   and so a function is called to iterate
+ *                   the SKU, FW: Major.Minor.Hotfix, build# to determine the
+ *                   vulnerable skus. This function returns a boolean value to inform
+ *                   a vulnerable sku.
+ *              (13) The information in step 11 and 12 is used to print the vulnerability
+ *                   status along side information on the provisioning status.
+ *                   if system is vulnerable and provisioned additional message 
+ *                   to perform the un-provisioning mitigation is provided.
+ * Notes:        None.
+ */
 int main(int argc, char **argv) {
     print_tool_banner();
-	if (argc>1 && !strncmp(argv[1],"-d",2)) {
-    	if (strlen(argv[2]) < MAX_DEV_NODE_PATH) {
-			dev_path = calloc(MAX_DEV_NODE_PATH,1);
-    		memcpy(dev_path, argv[2], strlen(argv[2]));
-    		custom_dev_node = true;
-    	}
+
+    if (geteuid() != 0) {
+        mei_err(me, "Please run the tool with root privilege.\n");
+        exit(-1);
     }
-    bool provisioned = false;
-    int ret = check_if_corporate_sku_by_connection();
+
+    const char *dev_path;
+    if (argc > 1 && !strncmp(argv[1], "-d", 2)) {
+        dev_path = argv[2];
+    } else {
+        dev_path = DEFAULT_MEI_DEV_NODE;
+    }
+
+    int ret = check_if_corporate_sku_by_connection(dev_path);
     if (ret == -1) {
         goto out;
     }
     if (ret == -2) {
-        print_vulnerability_message(provisioned, false); //false, false
+        //not-provisioned, not-vulnerable
+        print_vulnerability_message(false, false);
         goto out;
     }
 
-    struct amt_host_if acmd;
-    if (!amt_host_if_init(&acmd, 5000, false)) {
+    struct heci_host_if acmd;
+    CLIENT_TYPE client_type = AMT_CLIENT_TYPE;
+    if (!heci_host_if_init(&acmd, 5000, dev_path, client_type)) {
         ret = -1;
         goto out;
     }
     struct amt_code_versions ver;
     uint32_t status = amt_get_code_versions(&acmd, &ver);
-    amt_host_if_deinit(&acmd);
+    mei_deinit(&acmd.mei_cl);
 
     sku_decode SKU;
     char fw_string[MAX_FW_STRING];
     memset(fw_string, 0, MAX_FW_STRING);
     fw_decode FW;
     uint32_t me_build_num;
-    ret = parse_code_version_information(status, &SKU, &me_build_num, &ver, fw_string);
+    ret = parse_code_version_information(status, &SKU, &me_build_num, &ver,
+            fw_string);
     if (ret < 0) {
         goto out;
     }
@@ -940,13 +705,14 @@ int main(int argc, char **argv) {
 
     decode_me_fw_information(fw_string, &FW);
 
-    ret = get_provisioning_status();
+    bool provisioned = false;
+    ret = get_provisioning_status(dev_path, false);
     if (ret > 0) {
         provisioned = true;
     }
 
     if (provisioned) {
-        ret = get_provisioning_control_mode();
+        ret = get_provisioning_control_mode(dev_path);
         if (ret == 1) {
             printf("Control Mode: CLIENT / CCM\n");
         }
@@ -955,9 +721,8 @@ int main(int argc, char **argv) {
         }
         if (ret == -1 || ret == 0) {
             printf("Control Mode: Undetermined\n");
-        }       
+        }
     }
-
 
     if (!discover_vulnerability(SKU, FW, me_build_num)) {
         print_vulnerability_message(provisioned, false);
@@ -965,9 +730,6 @@ int main(int argc, char **argv) {
         print_vulnerability_message(provisioned, true);
     }
 
-    out:
-    if (custom_dev_node) {
-    	free(dev_path);
-    } 
+out: 
     return ret;
 }

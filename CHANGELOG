@@ -1,3 +1,9 @@
+Release 1.0
+INTEL-SA-00075-Discovery-Tool
+INTEL-SA-00075-Unprovisioning-Tool
+	- Added code documentation and centralized common functions for the tools.
+====================================
+
 Release 0.8
 INTEL-SA-00075-Discovery-Tool
 	- Tool should now support discovery on Intel(R) MEI firmware version 6.x
