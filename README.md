@@ -11,5 +11,5 @@ sudo ./INTEL-SA-00075-Unprovisioning-Tool or sudo ./INTEL-SA-00075-Unprovisionin
 NOTE: 
 If mei device is not found, Open Terminal and list available devices
 ls /dev/mei*
-This shoudl give the proper device node /dev/mei# ; then re-run the application with correct node
+This should give the proper device node /dev/mei# ; then re-run the application with correct node
 e.g sudo ./ INTEL-SA-00075-Unprovisioning-Tool –d /dev/mei0
